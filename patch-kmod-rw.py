@@ -3,17 +3,16 @@
 
 On this device (KernelSU LKM + a hardened OnePlus GKI build with
 CONFIG_STRICT_MODULE_RWX), the module's writable tail is left read-only once
-init_module returns.  The agent's worker thread keeps writing to frida-kmod.c
-statics after that point (kfifo, miscdevice, waitqueue, ...), which panics with
-"Unable to handle kernel write to read-only memory" inside __kfifo_alloc.
+init_module returns, and the kernel's set_memory_rw() is wrapped by an Android
+vendor hook (trace_android_vh_set_memory_rw) that OnePlus uses to veto the
+flip.  The agent's worker thread keeps writing to frida-kmod.c statics after
+that point (kfifo, miscdevice, waitqueue, ...), which panics with "Unable to
+handle kernel write to read-only memory" inside __kfifo_alloc/__kfifo_out.
 
-frida-kmod.c already resolves set_memory_rw() via kprobe in
-frida_resolve_kallsyms(); use it to flip the pages holding the module's writable
-statics back to RW right before the first post-init write to them.
-
-We use the symbol addresses directly instead of core_layout.ro_size /
-ro_after_init_size: on this kernel the latter is 0 (no .data..ro_after_init
-section), and ro_size turned out not to cover the tail reliably either.
+So instead of set_memory_rw(), resolve the unwrapped change_memory_common()
+(CONFIG_KALLSYMS_ALL exposes it) and call it directly with PTE_WRITE /
+PTE_EXEC masks, bypassing the vendor hook.  The symbol addresses of the
+module's writable statics delimit the range to flip.
 """
 
 import sys
@@ -31,16 +30,27 @@ NEW = """/* KernelSU LKM (and this hardened kernel) leave the module's .data/.bs
  * read-only once init_module returns, but the worker thread keeps writing to
  * frida-kmod.c's statics (kfifo, miscdevice, waitqueue, ...) long after that.
  * Re-mark the pages holding them RW before touching them.
- * __nocfi: set_memory_rw() is a kprobe-resolved pointer, whose type does not
- * carry a CFI hash, so the indirect call must bypass CFI. */
+ * __nocfi: the resolved change_memory_common() pointer has no CFI hash. */
 static void __nocfi
 frida_kmod_make_data_writable (void)
 {
+  /* int change_memory_common(unsigned long addr, int numpages,
+   *                          pgprot_t set_mask, pgprot_t clear_mask);
+   * pgprot_t is a single u64 on arm64, so it passes as an unsigned long. */
+  static int (*change_memory_common_impl) (unsigned long, int,
+                                           unsigned long, unsigned long);
   unsigned long start, end;
 
-  if (frida_set_memory_rw_impl == NULL)
+  if (frida_kallsyms_lookup_name_impl == NULL)
+    return;
+
+  if (change_memory_common_impl == NULL)
+    change_memory_common_impl =
+        (void *) frida_kallsyms_lookup_name_impl ("change_memory_common");
+
+  if (change_memory_common_impl == NULL)
     {
-      printk (KERN_WARNING "frida: set_memory_rw unavailable\\n");
+      printk (KERN_WARNING "frida: change_memory_common unavailable\\n");
       return;
     }
 
@@ -61,7 +71,10 @@ frida_kmod_make_data_writable (void)
 
   printk (KERN_INFO "frida: making 0x%lx..0x%lx writable (%lu pages)\\n",
           start, end, (end - start) >> PAGE_SHIFT);
-  frida_set_memory_rw_impl (start, (end - start) >> PAGE_SHIFT);
+  /* PTE_WRITE (AP[2]) = bit 55, PTE_EXEC/UXN = bit 54.  Setting WRITE and
+   * clearing UXN yields a read-write, non-executable mapping. */
+  change_memory_common_impl (start, (int) ((end - start) >> PAGE_SHIFT),
+                             1UL << 55, 1UL << 54);
 }
 
 int
