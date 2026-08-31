@@ -13,14 +13,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install tools (clang-19, python, binutils)
+      - name: Install tools (clang-19, python, binutils, gperf)
         run: |
           set -e
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             wget curl git xz-utils ca-certificates python3 python3-pip \
             binutils-aarch64-linux-gnu \
-            clang-19 libclang-19-dev lld-19
+            clang-19 libclang-19-dev lld-19 \
+            gperf make gcc g++ pkg-config autoconf automake libtool cmake \
+            flex bison texinfo
           python3 -m pip install --break-system-packages tomlkit
           clang-19 --version | head -1
 
@@ -42,10 +44,9 @@ jobs:
         run: |
           set -e
           export PATH="/usr/lib/llvm-19/bin:$PATH"
-          # NOTE: 17.17.0's pinned releng only understands config "softfloat"
-          # (it is the nopic variant); "softfloat_nopic"/"softfloat_pic" came
-          # later.  --target goes inline in CC so meson's preprocessor-defines
-          # probe runs the compiler in arm64 mode from the very first call.
+          # 17.17.0's pinned releng only knows config "softfloat" (the nopic
+          # variant).  --target goes inline in CC so meson's preprocessor probe
+          # runs the compiler in arm64 mode from the very first call.
           export CC="clang-19 --target=aarch64-none-elf"
           export CXX="clang++-19 --target=aarch64-none-elf"
           cd frida-core
@@ -68,9 +69,197 @@ jobs:
           aarch64-linux-gnu-objdump -d "$BUILTINS" 2>/dev/null | grep -c '\bbti\b' || true
 
       - name: Upload SDK bundle
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sdk-none-arm64-softfloat-bti
           path: frida-core/deps/sdk-none-arm64-softfloat.tar.xz
+          if-no-files-found: error
+
+  build-devkit:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ylarod/ddk-min:android13-5.15-20260313
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools (clang-19, python, binutils, gperf)
+        run: |
+          set -e
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            wget curl git xz-utils ca-certificates python3 python3-pip \
+            binutils-aarch64-linux-gnu \
+            clang-19 libclang-19-dev lld-19 \
+            gperf make gcc g++ pkg-config autoconf automake libtool cmake \
+            flex bison texinfo
+          python3 -m pip install --break-system-packages tomlkit
+          clang-19 --version | head -1
+
+      - name: Clone frida-gum (17.17.0) + releng
+        run: |
+          set -e
+          git clone --depth 1 --branch 17.17.0 --recurse-submodules \
+            https://github.com/frida/frida-gum.git
+          cd frida-gum
+          git submodule update --init --recursive --depth 1
+
+      - name: Patch releng env_generic.py (arm64 BTI)
+        run: |
+          set -e
+          python3 patch-bti-env.py frida-gum/releng/env_generic.py
+          grep -n "mbranch-protection" frida-gum/releng/env_generic.py
+
+      - name: Configure GumJS devkit
+        run: |
+          set -e
+          export PATH="/usr/lib/llvm-19/bin:$PATH"
+          export CC="clang-19 --target=aarch64-none-elf"
+          export CXX="clang++-19 --target=aarch64-none-elf"
+          cd frida-gum
+          ./configure \
+            --host=none-arm64-softfloat \
+            --enable-gumjs \
+            --with-devkits=gum,gumjs \
+            --with-devkit-symbol-scope=original 2>&1 | tail -60
+
+      - name: Build GumJS devkit
+        run: |
+          set -e
+          export PATH="/usr/lib/llvm-19/bin:$PATH"
+          cd frida-gum
+          make 2>&1 | tail -60
+          ls -la build/bindings/gumjs/devkit/ | head -30
+
+      - name: Verify BTI in devkit libfrida-gumjs.a
+        run: |
+          set -e
+          echo "--- bti instructions in libfrida-gumjs.a (expect > 0) ---"
+          aarch64-linux-gnu-objdump -d frida-gum/build/bindings/gumjs/devkit/libfrida-gumjs.a 2>/dev/null | grep -c '\bbti\b' || true
+
+      - name: Upload GumJS devkit
+        uses: actions/upload-artifact@v4
+        with:
+          name: gumjs-devkit-none-arm64-softfloat-bti
+          path: frida-gum/build/bindings/gumjs/devkit/
+          if-no-files-found: error
+
+  build-ko:
+    needs: [build-sdk, build-devkit]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ylarod/ddk-min:android13-5.15-20260313
+      options: --privileged
+
+    env:
+      FRIDA_VERSION: 17.17.0
+      KDIR: /opt/ddk/kdir/android13-5.15
+      KERNEL_CLANG: /opt/ddk/clang/clang-r450784e/bin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages (clang-19, binutils, python)
+        run: |
+          set -e
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            wget curl git xz-utils ca-certificates python3 python3-pip \
+            binutils-aarch64-linux-gnu \
+            clang-19 libclang-19-dev lld-19
+          python3 -m pip install --break-system-packages tomlkit
+          clang-19 --version | head -1
+
+      - name: Install Rust (aarch64-unknown-none + rust-src)
+        run: |
+          set -e
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          . "$HOME/.cargo/env"
+          rustup target add aarch64-unknown-none
+          rustup component add rust-src
+          rustc --version
+
+      - name: Download BTI SDK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-none-arm64-softfloat-bti
+          path: /tmp/sdk-artifact
+
+      - name: Download BTI devkit artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gumjs-devkit-none-arm64-softfloat-bti
+          path: /tmp/gumjs-devkit-bti
+
+      - name: Clone frida-core (17.17.0) + releng
+        run: |
+          set -e
+          git clone --depth 1 --branch 17.17.0 --recurse-submodules \
+            https://github.com/frida/frida-core.git
+          cd frida-core
+          git submodule update --init --recursive --depth 1
+
+      - name: Patch frida-kmod.c (CFI fix)
+        run: |
+          set -e
+          python3 patch-cfi.py frida-core/src/barebone/agent/linux/frida-kmod.c
+
+      - name: Extract BTI SDK and devkit
+        run: |
+          set -e
+          SDK="$HOME/sdk-none-arm64-softfloat"
+          mkdir -p "$SDK"
+          tar -C "$SDK" -xf /tmp/sdk-artifact/sdk-none-arm64-softfloat.tar.xz
+          ls "$SDK/lib" | head -20
+          ls /tmp/gumjs-devkit-bti | head -20
+
+      - name: Build frida-agent.ko
+        run: |
+          set -e
+          . "$HOME/.cargo/env"
+          export PATH="$KERNEL_CLANG:$PATH"
+          unset CLANG_PATH
+          export LIBCLANG_PATH=/usr/lib/llvm-19/lib
+
+          SDK="$HOME/sdk-none-arm64-softfloat"
+          export CC_AGENT="clang-19 --target=aarch64-none-elf -mabi=aapcs-soft \
+            -mgeneral-regs-only -ffixed-x18 -fno-pic -mbranch-protection=bti \
+            --sysroot=$SDK \
+            -isystem $SDK/include \
+            -I $SDK/include/glib-2.0 \
+            -I $SDK/lib/glib-2.0/include \
+            -I $SDK/include/capstone \
+            -I $SDK/include/json-glib-1.0"
+
+          cd frida-core/src/barebone/agent/linux
+          make \
+            ARCH=arm64 \
+            FRIDA_SDK="$SDK" \
+            GUMJS_DEVKIT_DIR="/tmp/gumjs-devkit-bti" \
+            AGENT_RUSTFLAGS="-Zfixed-x18 -Zbranch-protection=bti" \
+            AGENT_LD=aarch64-linux-gnu-ld \
+            AGENT_AR=aarch64-linux-gnu-ar \
+            AGENT_NM=aarch64-linux-gnu-nm \
+            AGENT_OBJCOPY=aarch64-linux-gnu-objcopy \
+            CC_aarch64_unknown_none="$CC_AGENT" \
+            KDIR="$KDIR" \
+            LLVM=1 \
+            2>&1 | tail -160
+          ls -la frida-agent.ko 2>/dev/null || echo "BUILD FAILED - no .ko"
+
+      - name: Verify BTI across the whole .ko
+        run: |
+          set -e
+          KO=frida-core/src/barebone/agent/linux/frida-agent.ko
+          echo "--- bti instructions in frida-agent.ko (expect > 0) ---"
+          aarch64-linux-gnu-objdump -d "$KO" 2>/dev/null | grep -c '\bbti\b' || true
+
+      - name: Upload frida-agent.ko
+        uses: actions/upload-artifact@v4
+        with:
+          name: frida-agent.ko-bti
+          path: |
+            frida-core/src/barebone/agent/linux/frida-agent.ko
+            frida-core/src/barebone/agent/linux/frida-agent-prelinked.o.bin
           if-no-files-found: warn
