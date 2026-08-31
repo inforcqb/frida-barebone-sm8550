@@ -118,6 +118,12 @@ jobs:
           python3 patch-gum-init.py frida-gum/gum/gum.c
           grep -n "glib_init\|gobject_init" frida-gum/gum/gum.c | head
 
+      - name: Patch gumarm64writer.c (BTI: br -> ret when no ptrauth)
+        run: |
+          set -e
+          python3 patch-gum-bti-ret.py frida-gum/gum/arch-arm64/gumarm64writer.c
+          grep -n "put_ret_reg (self, reg)" frida-gum/gum/arch-arm64/gumarm64writer.c
+
       - name: Download BTI SDK artifact
         uses: actions/download-artifact@v4
         with:
