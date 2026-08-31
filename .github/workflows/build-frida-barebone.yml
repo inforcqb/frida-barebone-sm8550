@@ -95,9 +95,11 @@ jobs:
 
           SDK="$HOME/sdk-none-arm64-softfloat_nopic"
           # 17.17.0's Makefile does not pass the C compiler to cargo, so pass
-          # CC_aarch64_unknown_none directly (build.rs reads it).
+          # CC_aarch64_unknown_none directly (build.rs reads it).  BTI
+          # (-mbranch-protection=bti) is required by CONFIG_ARM64_BTI_KERNEL.
           export CC_AGENT="clang-19 --target=aarch64-none-elf -mabi=aapcs-soft \
-            -mgeneral-regs-only -ffixed-x18 -fno-pic --sysroot=$SDK \
+            -mgeneral-regs-only -ffixed-x18 -fno-pic -mbranch-protection=bti \
+            --sysroot=$SDK \
             -isystem $SDK/include \
             -I $SDK/include/glib-2.0 \
             -I $SDK/lib/glib-2.0/include \
@@ -109,6 +111,7 @@ jobs:
             ARCH=arm64 \
             FRIDA_SDK="$SDK" \
             GUMJS_DEVKIT_DIR="$HOME/gumjs-devkit" \
+            AGENT_RUSTFLAGS="-Zfixed-x18 -Zbranch-protection=bti" \
             AGENT_LD=aarch64-linux-gnu-ld \
             AGENT_AR=aarch64-linux-gnu-ar \
             AGENT_NM=aarch64-linux-gnu-nm \
