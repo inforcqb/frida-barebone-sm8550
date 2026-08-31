@@ -39,6 +39,7 @@ jobs:
             wget curl git xz-utils ca-certificates python3 python3-pip \
             binutils-aarch64-linux-gnu \
             clang-19 libclang-19-dev lld-19
+          python3 -m pip install --break-system-packages tomlkit
           clang-19 --version | head -1
           ls /usr/lib/llvm-19/lib/libclang* 2>/dev/null | head -3 || true
 
