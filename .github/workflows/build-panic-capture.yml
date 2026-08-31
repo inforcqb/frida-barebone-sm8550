@@ -1,0 +1,29 @@
+name: build-panic-capture
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ylarod/ddk-min:android13-5.15-20260313
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build panic_capture.ko
+        run: |
+          set -e
+          make -C $KDIR M=$PWD/panic_capture ARCH=arm64 \
+               CC=clang LLVM=1 LLVM_IAS=1 modules 2>&1 | tail -30
+          ls -la panic_capture/panic_capture.ko
+
+      - name: Upload panic_capture.ko
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: panic_capture.ko-ddk
+          path: panic_capture/panic_capture.ko
+          if-no-files-found: warn
