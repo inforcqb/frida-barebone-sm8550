@@ -226,6 +226,11 @@ jobs:
           set -e
           python3 patch-cfi.py frida-core/src/barebone/agent/linux/frida-kmod.c
 
+      - name: Patch frida-kmod.c (re-mark .data/.bss writable)
+        run: |
+          set -e
+          python3 patch-kmod-rw.py frida-core/src/barebone/agent/linux/frida-kmod.c
+
       - name: Extract BTI SDK and devkit
         run: |
           set -e
