@@ -26,8 +26,10 @@ frida_kmod_link_open (void)
 NEW = """/* KernelSU LKM (and this hardened kernel) leave the module's .data/.bss
  * read-only once init_module returns, but the worker thread keeps writing to
  * frida-kmod.c's statics (kfifo, miscdevice, waitqueue, ...) long after that.
- * Re-mark the writable tail of the core layout RW before touching it. */
-static void
+ * Re-mark the writable tail of the core layout RW before touching it.
+ * __nocfi: set_memory_rw() is a kprobe-resolved pointer, whose type does not
+ * carry a CFI hash, so the indirect call must bypass CFI. */
+static void __nocfi
 frida_kmod_make_data_writable (void)
 {
   void *core_base;
