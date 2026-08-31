@@ -20,6 +20,8 @@ jobs:
       KERNEL_CLANG: /opt/ddk/clang/clang-r450784e/bin
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Probe environment
         run: |
           cat /etc/os-release
