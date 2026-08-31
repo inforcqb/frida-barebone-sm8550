@@ -71,10 +71,10 @@ frida_kmod_make_data_writable (void)
 
   printk (KERN_INFO "frida: making 0x%lx..0x%lx writable (%lu pages)\\n",
           start, end, (end - start) >> PAGE_SHIFT);
-  /* PTE_WRITE (AP[2]) = bit 55, PTE_EXEC/UXN = bit 54.  Setting WRITE and
-   * clearing UXN yields a read-write, non-executable mapping. */
+  /* arm64: PTE_WRITE == PTE_DBM == bit 51, PTE_RDONLY == AP[2] == bit 7.
+   * set_memory_rw() = change_memory_common(addr, n, PTE_WRITE, PTE_RDONLY). */
   change_memory_common_impl (start, (int) ((end - start) >> PAGE_SHIFT),
-                             1UL << 55, 1UL << 54);
+                             1UL << 51, 1UL << 7);
 }
 
 int
