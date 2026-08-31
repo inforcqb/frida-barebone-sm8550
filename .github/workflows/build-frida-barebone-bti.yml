@@ -112,6 +112,12 @@ jobs:
           python3 patch-bti-env.py frida-gum/releng/env_generic.py
           grep -n "mbranch-protection" frida-gum/releng/env_generic.py
 
+      - name: Patch gum.c (call glib_init/gobject_init unconditionally)
+        run: |
+          set -e
+          python3 patch-gum-init.py frida-gum/gum/gum.c
+          grep -n "glib_init\|gobject_init" frida-gum/gum/gum.c | head
+
       - name: Download BTI SDK artifact
         uses: actions/download-artifact@v4
         with:
