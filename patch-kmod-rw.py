@@ -33,17 +33,24 @@ static void __nocfi
 frida_kmod_make_data_writable (void)
 {
   void *core_base;
-  unsigned int core_size, ro_after_init_size;
+  unsigned int core_size, data_offset;
 
   if (frida_set_memory_rw_impl == NULL)
     return;
 
   core_base = THIS_MODULE->core_layout.base;
   core_size = THIS_MODULE->core_layout.size;
-  ro_after_init_size = THIS_MODULE->core_layout.ro_after_init_size;
 
-  frida_set_memory_rw_impl ((unsigned long) core_base + ro_after_init_size,
-                            (core_size - ro_after_init_size + PAGE_SIZE - 1) >> PAGE_SHIFT);
+  /* The writable data sits after text + rodata.  ro_after_init_size is only
+   * populated when the module has a .data..ro_after_init section (this one
+   * does not, so it stays 0 and would mark the whole module -- text included
+   * -- RW, which is fatal).  Fall back to ro_size in that case. */
+  data_offset = THIS_MODULE->core_layout.ro_after_init_size;
+  if (data_offset == 0)
+    data_offset = THIS_MODULE->core_layout.ro_size;
+
+  frida_set_memory_rw_impl ((unsigned long) core_base + data_offset,
+                            (core_size - data_offset + PAGE_SIZE - 1) >> PAGE_SHIFT);
 }
 
 int
