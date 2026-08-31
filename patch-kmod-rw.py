@@ -42,18 +42,15 @@ frida_kmod_make_data_writable (void)
   if (frida_set_memory_rw_impl == NULL)
     return;
 
-  /* frida-kmod.c's writable statics live in .data (frida_dev, the link mutex,
-   * waitqueues, ...) and in .bss (the two kfifos and the kprobe-resolved
-   * pointers).  frida_dev is the lowest and
-   * frida_kallsyms_on_each_symbol_impl the highest; mark that span RW. */
-  start = (unsigned long) &frida_dev;
-  end = (unsigned long) &frida_kallsyms_on_each_symbol_impl;
-  if (end < start)
-    {
-      unsigned long t = start;
-      start = end;
-      end = t;
-    }
+  /* Mark everything after .text writable (rodata + .data + .bss).  The
+   * prelinked Rust/glib/gum statics live in the same .bss/.data as
+   * frida-kmod.c's own, so use the core layout rather than symbol addresses.
+   * text_size is reliable (it is set from the first, executable section). */
+  start = (unsigned long) THIS_MODULE->core_layout.base
+          + THIS_MODULE->core_layout.text_size;
+  end = (unsigned long) THIS_MODULE->core_layout.base
+        + THIS_MODULE->core_layout.size;
+
   start &= PAGE_MASK;
   end = PAGE_ALIGN (end);
 
@@ -186,6 +183,51 @@ CALL_INSERTS = [
 ]
 
 
+PROTECT_OLD = """  if ((gum_prot & FRIDA_PAGE_WRITE) != 0)
+    {
+      if (frida_set_memory_nx_impl (start, n_pages) != 0)
+        return 0;
+      return frida_set_memory_rw_impl (start, n_pages) == 0;
+    }
+
+  if (frida_set_memory_ro_impl (start, n_pages) != 0)
+    return 0;
+
+  if ((gum_prot & FRIDA_PAGE_EXECUTE) != 0)
+    return frida_set_memory_x_impl (start, n_pages) == 0;
+
+  return 1;
+}
+"""
+
+PROTECT_NEW = """  int result;
+
+  if ((gum_prot & FRIDA_PAGE_WRITE) != 0)
+    {
+      if (frida_set_memory_nx_impl (start, n_pages) != 0)
+        result = 0;
+      else
+        result = frida_set_memory_rw_impl (start, n_pages) == 0;
+    }
+  else
+    {
+      if (frida_set_memory_ro_impl (start, n_pages) != 0)
+        result = 0;
+      else if ((gum_prot & FRIDA_PAGE_EXECUTE) != 0)
+        result = frida_set_memory_x_impl (start, n_pages) == 0;
+      else
+        result = 1;
+    }
+
+  /* set_memory_ro() above (or its vendor hook) can flip the module's own
+   * .data/.bss back to read-only; keep them writable. */
+  frida_kmod_make_data_writable ();
+
+  return result;
+}
+"""
+
+
 def patch(path):
     with open(path, encoding="utf-8") as f:
         text = f.read()
@@ -195,6 +237,12 @@ def patch(path):
               file=sys.stderr)
         return False
     text = text.replace(LINK_OPEN_OLD, LINK_OPEN_NEW, 1)
+
+    if PROTECT_OLD not in text:
+        print(f"ERROR: frida_kmod_protect block not found in {path}",
+              file=sys.stderr)
+        return False
+    text = text.replace(PROTECT_OLD, PROTECT_NEW, 1)
 
     missed = []
     for old, new in CALL_INSERTS:
