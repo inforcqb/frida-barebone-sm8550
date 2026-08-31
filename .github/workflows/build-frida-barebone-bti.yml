@@ -13,56 +13,63 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install tools (clang-19, rust, python, meson/ninja)
+      - name: Install tools (clang-19, python, binutils)
         run: |
           set -e
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             wget curl git xz-utils ca-certificates python3 python3-pip \
-            meson ninja-build \
+            binutils-aarch64-linux-gnu \
             clang-19 libclang-19-dev lld-19
           python3 -m pip install --break-system-packages tomlkit
-          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          . "$HOME/.cargo/env"
-          rustup target add aarch64-unknown-none
-          rustup component add rust-src
           clang-19 --version | head -1
-          meson --version
 
-      - name: Clone frida-core (full + submodules)
+      - name: Clone frida-core (17.17.0) + releng
         run: |
           set -e
-          git clone --depth 1 --branch 17.17.0 --recurse-submodules \
-            https://github.com/frida/frida-core.git
+          git clone --depth 1 --branch 17.17.0 https://github.com/frida/frida-core.git
           cd frida-core
-          git submodule update --init --recursive --depth 1
+          git submodule update --init --depth 1 releng
+
+      - name: Patch releng env_generic.py (arm64 BTI)
+        run: |
+          set -e
+          python3 patch-bti-env.py frida-core/releng/env_generic.py
+          grep -n "mbranch-protection" frida-core/releng/env_generic.py
 
       - name: Build soft-float SDK with BTI
         run: |
           set -e
-          . "$HOME/.cargo/env"
           export PATH="/usr/lib/llvm-19/bin:$PATH"
-          export CC=clang-19
-          export CXX=clang++-19
-          export CFLAGS="-mbranch-protection=bti"
-          export CXXFLAGS="-mbranch-protection=bti"
-          export LDFLAGS=""
+          # NOTE: 17.17.0's pinned releng only understands config "softfloat"
+          # (it is the nopic variant); "softfloat_nopic"/"softfloat_pic" came
+          # later.  --target goes inline in CC so meson's preprocessor-defines
+          # probe runs the compiler in arm64 mode from the very first call.
+          export CC="clang-19 --target=aarch64-none-elf"
+          export CXX="clang++-19 --target=aarch64-none-elf"
           cd frida-core
-          python3 releng/deps.py build --bundle=sdk --host=none-arm64-softfloat_nopic 2>&1 | tail -60
-          ls -la deps/ | head -20
+          python3 releng/deps.py build --bundle=sdk --host=none-arm64-softfloat 2>&1 | tail -80
+          ls -la deps/*.tar.xz
 
       - name: Verify BTI in built libc.a
         run: |
           set -e
-          SDK_DIR=$(ls -d $HOME/.cache/frida/deps/sdk-none-arm64-softfloat_nopic-* 2>/dev/null | head -1 || true)
-          echo "SDK_DIR=$SDK_DIR"
-          # extract the SDK bundle produced by deps.py build
-          ls -la frida-core/deps/*.tar.xz 2>/dev/null || true
+          SDK_TARBALL=$(ls frida-core/deps/sdk-none-arm64-softfloat.tar.xz)
+          echo "SDK_TARBALL=$SDK_TARBALL"
+          mkdir -p /tmp/sdk-check
+          tar -C /tmp/sdk-check -xf "$SDK_TARBALL"
+          LIBC=$(find /tmp/sdk-check -name 'libc.a' | head -1)
+          echo "LIBC=$LIBC"
+          echo "--- bti instructions in picolibc (expect > 0) ---"
+          aarch64-linux-gnu-objdump -d "$LIBC" 2>/dev/null | grep -c '\bbti\b' || true
+          echo "--- bti instructions in compiler-rt (expect > 0) ---"
+          BUILTINS=$(find /tmp/sdk-check -name 'libclang_rt.builtins.a' | head -1)
+          aarch64-linux-gnu-objdump -d "$BUILTINS" 2>/dev/null | grep -c '\bbti\b' || true
 
       - name: Upload SDK bundle
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sdk-none-arm64-softfloat_nopic-bti
-          path: frida-core/deps/*.tar.xz
+          name: sdk-none-arm64-softfloat-bti
+          path: frida-core/deps/sdk-none-arm64-softfloat.tar.xz
           if-no-files-found: warn
