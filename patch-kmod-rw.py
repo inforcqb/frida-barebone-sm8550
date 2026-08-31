@@ -8,8 +8,12 @@ statics after that point (kfifo, miscdevice, waitqueue, ...), which panics with
 "Unable to handle kernel write to read-only memory" inside __kfifo_alloc.
 
 frida-kmod.c already resolves set_memory_rw() via kprobe in
-frida_resolve_kallsyms(); use it to flip the core layout's data/bss tail back to
-RW right before the first post-init write to it.
+frida_resolve_kallsyms(); use it to flip the pages holding the module's writable
+statics back to RW right before the first post-init write to them.
+
+We use the symbol addresses directly instead of core_layout.ro_size /
+ro_after_init_size: on this kernel the latter is 0 (no .data..ro_after_init
+section), and ro_size turned out not to cover the tail reliably either.
 """
 
 import sys
@@ -26,31 +30,38 @@ frida_kmod_link_open (void)
 NEW = """/* KernelSU LKM (and this hardened kernel) leave the module's .data/.bss
  * read-only once init_module returns, but the worker thread keeps writing to
  * frida-kmod.c's statics (kfifo, miscdevice, waitqueue, ...) long after that.
- * Re-mark the writable tail of the core layout RW before touching it.
+ * Re-mark the pages holding them RW before touching them.
  * __nocfi: set_memory_rw() is a kprobe-resolved pointer, whose type does not
  * carry a CFI hash, so the indirect call must bypass CFI. */
 static void __nocfi
 frida_kmod_make_data_writable (void)
 {
-  void *core_base;
-  unsigned int core_size, data_offset;
+  unsigned long start, end;
 
   if (frida_set_memory_rw_impl == NULL)
-    return;
+    {
+      printk (KERN_WARNING "frida: set_memory_rw unavailable\\n");
+      return;
+    }
 
-  core_base = THIS_MODULE->core_layout.base;
-  core_size = THIS_MODULE->core_layout.size;
+  /* frida-kmod.c's writable statics live in .data (frida_dev, the link mutex,
+   * waitqueues, ...) and in .bss (the two kfifos and the kprobe-resolved
+   * pointers).  frida_dev is the lowest and
+   * frida_kallsyms_on_each_symbol_impl the highest; mark that span RW. */
+  start = (unsigned long) &frida_dev;
+  end = (unsigned long) &frida_kallsyms_on_each_symbol_impl;
+  if (end < start)
+    {
+      unsigned long t = start;
+      start = end;
+      end = t;
+    }
+  start &= PAGE_MASK;
+  end = PAGE_ALIGN (end);
 
-  /* The writable data sits after text + rodata.  ro_after_init_size is only
-   * populated when the module has a .data..ro_after_init section (this one
-   * does not, so it stays 0 and would mark the whole module -- text included
-   * -- RW, which is fatal).  Fall back to ro_size in that case. */
-  data_offset = THIS_MODULE->core_layout.ro_after_init_size;
-  if (data_offset == 0)
-    data_offset = THIS_MODULE->core_layout.ro_size;
-
-  frida_set_memory_rw_impl ((unsigned long) core_base + data_offset,
-                            (core_size - data_offset + PAGE_SIZE - 1) >> PAGE_SHIFT);
+  printk (KERN_INFO "frida: making 0x%lx..0x%lx writable (%lu pages)\\n",
+          start, end, (end - start) >> PAGE_SHIFT);
+  frida_set_memory_rw_impl (start, (end - start) >> PAGE_SHIFT);
 }
 
 int
