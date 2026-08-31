@@ -1,0 +1,10 @@
+# scratch / inspection files (not part of the build)
+agent_Makefile.txt
+agent_build.rs
+frida-kmod.c
+frida-kmod-main.c
+panic.dat.gz
+panic_kmsg.txt
+deploy/
+*.ko
+*.o.bin

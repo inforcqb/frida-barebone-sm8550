@@ -59,6 +59,11 @@ jobs:
           cd frida-core
           git submodule update --init --depth 1 releng
 
+      - name: Patch frida-kmod.c (CFI fix)
+        run: |
+          set -e
+          python3 patch-cfi.py frida-core/src/barebone/agent/linux/frida-kmod.c
+
       - name: Download GumJS devkit (soft-float)
         run: |
           set -e
