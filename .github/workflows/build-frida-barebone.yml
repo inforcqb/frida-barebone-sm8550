@@ -81,22 +81,35 @@ jobs:
           set -e
           . "$HOME/.cargo/env"
           # keep the kernel's own clang-14 first in PATH so kbuild (LLVM=1)
-          # uses it; the soft-float prelink uses clang-19 via AGENT_CC.
+          # uses it; the soft-float prelink uses clang-19 explicitly below.
           export PATH="$KERNEL_CLANG:$PATH"
+          unset CLANG_PATH        # container sets it to a *dir*; clang-sys chokes
           export LIBCLANG_PATH=/usr/lib/llvm-19/lib
+
+          SDK="$HOME/sdk-none-arm64-softfloat_nopic"
+          # 17.17.0's Makefile does not pass the C compiler to cargo, so pass
+          # CC_aarch64_unknown_none directly (build.rs reads it).
+          export CC_AGENT="clang-19 --target=aarch64-none-elf -mabi=aapcs-soft \
+            -mgeneral-regs-only -ffixed-x18 -fno-pic --sysroot=$SDK \
+            -isystem $SDK/include \
+            -I $SDK/include/glib-2.0 \
+            -I $SDK/lib/glib-2.0/include \
+            -I $SDK/include/capstone \
+            -I $SDK/include/json-glib-1.0"
+
           cd frida-core/src/barebone/agent/linux
           make \
             ARCH=arm64 \
-            FRIDA_SDK="$HOME/sdk-none-arm64-softfloat_nopic" \
+            FRIDA_SDK="$SDK" \
             GUMJS_DEVKIT_DIR="$HOME/gumjs-devkit" \
-            AGENT_CC=clang-19 \
             AGENT_LD=aarch64-linux-gnu-ld \
             AGENT_AR=aarch64-linux-gnu-ar \
             AGENT_NM=aarch64-linux-gnu-nm \
             AGENT_OBJCOPY=aarch64-linux-gnu-objcopy \
+            CC_aarch64_unknown_none="$CC_AGENT" \
             KDIR="$KDIR" \
             LLVM=1 \
-            2>&1 | tail -140
+            2>&1 | tail -160
           ls -la frida-agent.ko 2>/dev/null || echo "BUILD FAILED - no .ko"
 
       - name: Upload frida-agent.ko
