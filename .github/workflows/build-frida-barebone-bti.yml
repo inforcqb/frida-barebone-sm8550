@@ -27,9 +27,10 @@ jobs:
       - name: Clone frida-core (17.17.0) + releng
         run: |
           set -e
-          git clone --depth 1 --branch 17.17.0 https://github.com/frida/frida-core.git
+          git clone --depth 1 --branch 17.17.0 --recurse-submodules \
+            https://github.com/frida/frida-core.git
           cd frida-core
-          git submodule update --init --depth 1 releng
+          git submodule update --init --recursive --depth 1
 
       - name: Patch releng env_generic.py (arm64 BTI)
         run: |
