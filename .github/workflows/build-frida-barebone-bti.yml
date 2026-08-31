@@ -1,0 +1,68 @@
+name: build-frida-barebone-bti
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-sdk:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ylarod/ddk-min:android13-5.15-20260313
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools (clang-19, rust, python, meson/ninja)
+        run: |
+          set -e
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            wget curl git xz-utils ca-certificates python3 python3-pip \
+            meson ninja-build \
+            clang-19 libclang-19-dev lld-19
+          python3 -m pip install --break-system-packages tomlkit
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          . "$HOME/.cargo/env"
+          rustup target add aarch64-unknown-none
+          rustup component add rust-src
+          clang-19 --version | head -1
+          meson --version
+
+      - name: Clone frida-core (full + submodules)
+        run: |
+          set -e
+          git clone --depth 1 --branch 17.17.0 --recurse-submodules \
+            https://github.com/frida/frida-core.git
+          cd frida-core
+          git submodule update --init --recursive --depth 1
+
+      - name: Build soft-float SDK with BTI
+        run: |
+          set -e
+          . "$HOME/.cargo/env"
+          export PATH="/usr/lib/llvm-19/bin:$PATH"
+          export CC=clang-19
+          export CXX=clang++-19
+          export CFLAGS="-mbranch-protection=bti"
+          export CXXFLAGS="-mbranch-protection=bti"
+          export LDFLAGS=""
+          cd frida-core
+          python3 releng/deps.py build --bundle=sdk --host=none-arm64-softfloat_nopic 2>&1 | tail -60
+          ls -la deps/ | head -20
+
+      - name: Verify BTI in built libc.a
+        run: |
+          set -e
+          SDK_DIR=$(ls -d $HOME/.cache/frida/deps/sdk-none-arm64-softfloat_nopic-* 2>/dev/null | head -1 || true)
+          echo "SDK_DIR=$SDK_DIR"
+          # extract the SDK bundle produced by deps.py build
+          ls -la frida-core/deps/*.tar.xz 2>/dev/null || true
+
+      - name: Upload SDK bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-none-arm64-softfloat_nopic-bti
+          path: frida-core/deps/*.tar.xz
+          if-no-files-found: warn
