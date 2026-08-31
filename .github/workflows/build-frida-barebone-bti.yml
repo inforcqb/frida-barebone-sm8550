@@ -42,7 +42,7 @@ jobs:
 
       - name: Build soft-float SDK with BTI
         run: |
-          set -e
+          set -eo pipefail
           export PATH="/usr/lib/llvm-19/bin:$PATH"
           # 17.17.0's pinned releng only knows config "softfloat" (the nopic
           # variant).  --target goes inline in CC so meson's preprocessor probe
@@ -76,6 +76,7 @@ jobs:
           if-no-files-found: error
 
   build-devkit:
+    needs: [build-sdk]
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/ylarod/ddk-min:android13-5.15-20260313
@@ -111,9 +112,23 @@ jobs:
           python3 patch-bti-env.py frida-gum/releng/env_generic.py
           grep -n "mbranch-protection" frida-gum/releng/env_generic.py
 
-      - name: Configure GumJS devkit
+      - name: Download BTI SDK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-none-arm64-softfloat-bti
+          path: /tmp/sdk-artifact
+
+      - name: Stage SDK tarball for gum configure
         run: |
           set -e
+          mkdir -p frida-gum/deps
+          cp /tmp/sdk-artifact/sdk-none-arm64-softfloat.tar.xz \
+             frida-gum/deps/sdk-none-arm64-softfloat.tar.xz
+          ls -la frida-gum/deps/
+
+      - name: Configure GumJS devkit
+        run: |
+          set -eo pipefail
           export PATH="/usr/lib/llvm-19/bin:$PATH"
           export CC="clang-19 --target=aarch64-none-elf"
           export CXX="clang++-19 --target=aarch64-none-elf"
@@ -126,7 +141,7 @@ jobs:
 
       - name: Build GumJS devkit
         run: |
-          set -e
+          set -eo pipefail
           export PATH="/usr/lib/llvm-19/bin:$PATH"
           cd frida-gum
           make 2>&1 | tail -60
