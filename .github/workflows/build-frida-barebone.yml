@@ -1,0 +1,112 @@
+name: build-frida-barebone
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      # DDK container: prepared GKI 5.15 kernel tree for OnePlus SM8550
+      # (5.15.180-android13-8-o-01176).  Used as KDIR for the kbuild half;
+      # the prelink half (Rust + GumJS + soft-float libc) is built on top
+      # with clang-19 + Rust installed in this container.
+      image: ghcr.io/ylarod/ddk-min:android13-5.15-20260313
+      options: --privileged
+
+    env:
+      FRIDA_VERSION: 17.17.0
+      KDIR: /opt/ddk/kdir/android13-5.15
+      KERNEL_CLANG: /opt/ddk/clang/clang-r450784e/bin
+
+    steps:
+      - name: Probe environment
+        run: |
+          cat /etc/os-release
+          echo "PATH=$PATH"
+          echo "KDIR=$KDIR KERNEL_CLANG=$KERNEL_CLANG"
+          for t in apt-get dnf apk git curl wget python3 clang rustc cargo aarch64-linux-gnu-ld; do
+            printf '%-24s' "$t"; command -v $t 2>/dev/null || echo "(missing)"
+          done
+          clang --version | head -1
+
+      - name: Install system packages (clang-19, binutils, python)
+        run: |
+          set -e
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            wget curl git xz-utils ca-certificates python3 python3-pip \
+            binutils-aarch64-linux-gnu libclang-19-dev 2>/dev/null || \
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            wget curl git xz-utils ca-certificates python3 python3-pip \
+            binutils-aarch64-linux-gnu
+          # clang 19 (required for -mabi=aapcs-soft; GCC lacks it)
+          bash <(wget -qO- https://apt.llvm.org/llvm.sh) 19
+          clang-19 --version | head -1
+          ls /usr/lib/llvm-19/lib/libclang* 2>/dev/null | head -3 || true
+
+      - name: Install Rust (aarch64-unknown-none + rust-src)
+        run: |
+          set -e
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          . "$HOME/.cargo/env"
+          rustup target add aarch64-unknown-none
+          rustup component add rust-src
+          rustc --version
+
+      - name: Clone frida-core (17.17.0) + releng
+        run: |
+          set -e
+          git clone --depth 1 --branch 17.17.0 https://github.com/frida/frida-core.git
+          cd frida-core
+          git submodule update --init --depth 1 releng
+
+      - name: Download GumJS devkit (soft-float)
+        run: |
+          set -e
+          base=https://github.com/frida/frida/releases/download/$FRIDA_VERSION
+          curl -fLO "$base/frida-gumjs-devkit-$FRIDA_VERSION-none-arm64-softfloat.tar.xz"
+          mkdir -p "$HOME/gumjs-devkit"
+          tar -C "$HOME/gumjs-devkit" -xf frida-gumjs-devkit-$FRIDA_VERSION-none-arm64-softfloat.tar.xz
+          ls -la "$HOME/gumjs-devkit" | head
+
+      - name: Sync soft-float SDK (picolibc + compiler-rt)
+        run: |
+          set -e
+          cd frida-core
+          python3 releng/deps.py sync sdk none-arm64-softfloat_nopic \
+            "$HOME/sdk-none-arm64-softfloat_nopic"
+          ls "$HOME/sdk-none-arm64-softfloat_nopic/lib" | head -10
+
+      - name: Build frida-agent.ko
+        run: |
+          set -e
+          . "$HOME/.cargo/env"
+          # keep the kernel's own clang-14 first in PATH so kbuild (LLVM=1)
+          # uses it; the soft-float prelink uses clang-19 via AGENT_CC.
+          export PATH="$KERNEL_CLANG:$PATH"
+          export LIBCLANG_PATH=/usr/lib/llvm-19/lib
+          cd frida-core/src/barebone/agent/linux
+          make \
+            ARCH=arm64 \
+            FRIDA_SDK="$HOME/sdk-none-arm64-softfloat_nopic" \
+            GUMJS_DEVKIT_DIR="$HOME/gumjs-devkit" \
+            AGENT_CC=clang-19 \
+            AGENT_LD=aarch64-linux-gnu-ld \
+            AGENT_AR=aarch64-linux-gnu-ar \
+            AGENT_NM=aarch64-linux-gnu-nm \
+            AGENT_OBJCOPY=aarch64-linux-gnu-objcopy \
+            KDIR="$KDIR" \
+            LLVM=1 \
+            2>&1 | tail -140
+          ls -la frida-agent.ko 2>/dev/null || echo "BUILD FAILED - no .ko"
+
+      - name: Upload frida-agent.ko
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frida-agent.ko-ddk
+          path: |
+            frida-core/src/barebone/agent/linux/frida-agent.ko
+            frida-core/src/barebone/agent/linux/frida-agent-prelinked.o.bin
+          if-no-files-found: warn
