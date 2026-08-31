@@ -33,9 +33,11 @@ jobs:
           ndk-version: r29
           add-to-path: false
 
+      - name: Set ANDROID_NDK_ROOT
+        run: echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
+
       - name: Configure (arm64 + barebone backend)
         run: |
-          export ANDROID_NDK_ROOT="${{ steps.ndk.outputs.ndk-path }}"
           ./configure \
             --prefix="$FRIDA_PREFIX" \
             --host=android-arm64 \
