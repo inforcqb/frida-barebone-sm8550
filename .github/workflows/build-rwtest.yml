@@ -1,0 +1,32 @@
+name: build-rwtest
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ylarod/ddk-min:android13-5.15-20260313
+      options: --privileged
+    env:
+      KDIR: /opt/ddk/kdir/android13-5.15
+      KERNEL_CLANG: /opt/ddk/clang/clang-r450784e/bin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build rwtest.ko
+        run: |
+          set -eo pipefail
+          export PATH="$KERNEL_CLANG:$PATH"
+          cd rwtest
+          make KDIR="$KDIR" 2>&1 | tail -40
+          ls -la rwtest.ko
+          file rwtest.ko 2>/dev/null || true
+
+      - name: Upload rwtest.ko
+        uses: actions/upload-artifact@v4
+        with:
+          name: rwtest
+          path: rwtest/rwtest.ko
+          if-no-files-found: error
