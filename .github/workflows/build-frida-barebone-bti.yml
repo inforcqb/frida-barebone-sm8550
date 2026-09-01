@@ -237,6 +237,12 @@ jobs:
           set -e
           python3 patch-kmod-rw.py frida-core/src/barebone/agent/linux/frida-kmod.c
 
+      - name: Patch frida-kmod.c (pre-write RO probe)
+        run: |
+          set -e
+          python3 patch-kmod-rocheck.py frida-core/src/barebone/agent/linux/frida-kmod.c
+          grep -n "frida_page_is_ro\|ABORT link_open" frida-core/src/barebone/agent/linux/frida-kmod.c | head
+
       - name: Extract BTI SDK and devkit
         run: |
           set -e
