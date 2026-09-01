@@ -124,6 +124,12 @@ jobs:
           python3 patch-gum-bti-ret.py frida-gum/gum/arch-arm64/gumarm64writer.c
           grep -n "put_ret_reg (self, reg)" frida-gum/gum/arch-arm64/gumarm64writer.c
 
+      - name: "Patch gumquickcore.c (NULL-guard strstr in exception handling)"
+        run: |
+          set -e
+          python3 patch-gum-exception-null.py frida-gum/bindings/gumjs/gumquickcore.c
+          grep -n "message != NULL" frida-gum/bindings/gumjs/gumquickcore.c
+
       - name: Download BTI SDK artifact
         uses: actions/download-artifact@v4
         with:
