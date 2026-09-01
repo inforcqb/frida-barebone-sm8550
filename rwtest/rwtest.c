@@ -2,18 +2,18 @@
 /*
  * rwtest.c — probe module .data/.bss read-only state on this kernel.
  *
- * Load with `ksud insmod rwtest.ko` (kallsyms access) and read dmesg.  No
- * writes to the probed statics, so nothing panics: we only read the PTE
- * RDONLY bit (arm64 AP[2] == bit 7) and report set_memory_* return values.
- *
- * Mirrors frida-kmod.c's make_data_writable(): resolve unexported symbols via
- * kprobe, then set_memory_rw() over base+text_size .. base+size.
+ * Loadable by BOTH standard `insmod` (module region) and `ksud insmod`
+ * (kallsyms access).  No unexported symbol is referenced directly: init_mm,
+ * set_memory_rw/ro/nx are resolved at runtime via kprobe, exactly like
+ * frida-kmod.c.  We only READ the PTE RDONLY bit (arm64 AP[2] == bit 7), so
+ * nothing panics on a read-only page.
  */
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/kprobes.h>
 #include <linux/pgtable.h>
 #include <linux/vmalloc.h>
+#include <linux/sched/mm.h>
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("probe module data/bss RO state");
@@ -21,6 +21,7 @@ MODULE_DESCRIPTION("probe module data/bss RO state");
 static int data_var = 0x11223344;   /* .data */
 static int bss_var;                  /* .bss */
 
+static struct mm_struct *p_init_mm;
 static int (*p_set_memory_rw)(unsigned long, int);
 static int (*p_set_memory_ro)(unsigned long, int);
 static int (*p_set_memory_nx)(unsigned long, int);
@@ -37,7 +38,8 @@ static void *resolve_unexported(const char *name)
     return addr;
 }
 
-/* arm64 PTE_RDONLY is AP[2] == bit 7. */
+/* arm64 PTE_RDONLY is AP[2] == bit 7.  Walk the page table by hand using the
+ * runtime-resolved init_mm, so we never reference init_mm directly. */
 static int page_is_ro(unsigned long addr)
 {
     pgd_t *pgd;
@@ -46,7 +48,10 @@ static int page_is_ro(unsigned long addr)
     pmd_t *pmd;
     pte_t *pte;
 
-    pgd = pgd_offset_k(addr);
+    if (p_init_mm == NULL)
+        return -1;
+
+    pgd = p_init_mm->pgd + pgd_index(addr);
     if (pgd_none(*pgd) || pgd_bad(*pgd))
         return -1;
     p4d = p4d_offset(pgd, addr);
@@ -76,15 +81,17 @@ static int __init rwtest_init(void)
     pr_info("rwtest: base=%px size=0x%x text=0x%x ro=0x%x ro_after=0x%x\n",
         cl->base, cl->size, cl->text_size, cl->ro_size,
         cl->ro_after_init_size);
-    pr_info("rwtest: data=%px ro=%d  bss=%px ro=%d\n",
-        (void *)data_addr, page_is_ro(data_addr),
-        (void *)bss_addr, page_is_ro(bss_addr));
 
+    p_init_mm = resolve_unexported("init_mm");
     p_set_memory_rw = resolve_unexported("set_memory_rw");
     p_set_memory_ro = resolve_unexported("set_memory_ro");
     p_set_memory_nx = resolve_unexported("set_memory_nx");
-    pr_info("rwtest: rw=%px ro=%px nx=%px\n",
-        p_set_memory_rw, p_set_memory_ro, p_set_memory_nx);
+    pr_info("rwtest: init_mm=%px rw=%px ro=%px nx=%px\n",
+        p_init_mm, p_set_memory_rw, p_set_memory_ro, p_set_memory_nx);
+
+    pr_info("rwtest: data=%px ro=%d  bss=%px ro=%d\n",
+        (void *)data_addr, page_is_ro(data_addr),
+        (void *)bss_addr, page_is_ro(bss_addr));
 
     /* Reproduce make_data_writable(): set_memory_rw over non-text region. */
     start = (unsigned long)cl->base + cl->text_size;
