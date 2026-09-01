@@ -14,11 +14,15 @@ log line, letting us see WHEN the page got flipped RO without rebooting.
 import sys
 
 
-# Anchor 1a: declare frida_init_mm next to the other resolved-symbol pointers.
-GLOBALS_ANCHOR = """static typeof (&set_memory_nx) frida_set_memory_nx_impl;"""
+# Anchor 1a: declare frida_init_mm before frida_resolve_kallsyms() (which is
+# the first user), using a stable anchor just above it.
+GLOBALS_ANCHOR = """MODULE_VERSION ("1.0.0");
+"""
 
-GLOBALS_NEW = """static typeof (&set_memory_nx) frida_set_memory_nx_impl;
-static struct mm_struct * frida_init_mm;"""
+GLOBALS_NEW = """MODULE_VERSION ("1.0.0");
+
+static struct mm_struct * frida_init_mm;
+"""
 
 
 # Anchor 1b: insert the RO probe right before the frida_kmod_make_data_writable()
