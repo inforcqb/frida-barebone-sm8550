@@ -14,8 +14,15 @@ log line, letting us see WHEN the page got flipped RO without rebooting.
 import sys
 
 
-# Anchor 1: insert the RO probe + init_mm resolver right before the
-# frida_kmod_make_data_writable() helper that patch-kmod-rw.py inserted.
+# Anchor 1a: declare frida_init_mm next to the other resolved-symbol pointers.
+GLOBALS_ANCHOR = """static typeof (&set_memory_nx) frida_set_memory_nx_impl;"""
+
+GLOBALS_NEW = """static typeof (&set_memory_nx) frida_set_memory_nx_impl;
+static struct mm_struct * frida_init_mm;"""
+
+
+# Anchor 1b: insert the RO probe right before the frida_kmod_make_data_writable()
+# helper that patch-kmod-rw.py inserted.
 MAKE_RW_ANCHOR = """/* KernelSU LKM (and this hardened kernel) leaves the module's .data/.bss
  * read-only, and Gum's code protection can flip them back to read-only again
  * later.  Re-mark the pages holding frida-kmod.c's writable statics RW before
@@ -28,8 +35,6 @@ MAKE_RW_PROBE = """/* KernelSU LKM (and this hardened kernel) leaves the module'
  * later.  Re-mark the pages holding frida-kmod.c's writable statics RW before
  * touching them.  __nocfi: set_memory_rw() is a kprobe-resolved pointer whose
  * type carries no CFI hash. */
-static struct mm_struct * frida_init_mm;
-
 static int
 frida_page_is_ro (unsigned long addr)
 {
@@ -101,10 +106,17 @@ def patch(path):
     with open(path, encoding="utf-8", newline="") as f:
         text = f.read()
 
+    # Normalise CRLF -> LF so anchors match regardless of how this .py or the
+    # target file was saved.
+    text = text.replace("\r\n", "\n")
+
     changed = 0
-    for old, new in ((MAKE_RW_ANCHOR, MAKE_RW_PROBE),
+    for old, new in ((GLOBALS_ANCHOR, GLOBALS_NEW),
+                     (MAKE_RW_ANCHOR, MAKE_RW_PROBE),
                      (RESOLVE_ANCHOR, RESOLVE_NEW),
                      (LINK_OPEN_ANCHOR, LINK_OPEN_NEW)):
+        old = old.replace("\r\n", "\n")
+        new = new.replace("\r\n", "\n")
         if old in text:
             text = text.replace(old, new, 1)
             changed += 1
